@@ -14,7 +14,7 @@ ratios=[.7 .15 .15];%Train,Valid,Test ratios
 
 %% Train REBEL
 %Training parameters (tree depth and number of learners)
-pTrain = struct('depth',1, 'nWL',50);
+pTrain = struct('depth',1, 'nWL',10);
 %Cost matrix (uniform)
 CC_ = 1 - eye(numCl);
 %Perform actual training
