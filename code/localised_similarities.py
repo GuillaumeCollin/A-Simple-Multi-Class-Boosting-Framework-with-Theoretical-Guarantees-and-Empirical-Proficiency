@@ -12,6 +12,8 @@ class LocalisedSimilaritiesClassifier(object):
         self.a = None
 
     def get_params(self, deep=True):
+        #print('loss dans get parameters')
+        #print(self.final_loss)
         params = {
             "a" : self.a,
             "localised_similarity" : {'type': self.clf_name,
@@ -43,6 +45,8 @@ class LocalisedSimilaritiesClassifier(object):
             self.H = H
         else:
             self.H = np.zeros((self.n_target, self.len_data)) #Résultat du boosting à l'étape n-1
+        #print('New H')
+        #print(self.H)
         self.W = 1/2*np.exp(self.Y * self.H)
         self.U = np.zeros((self.n_target, self.len_data))
         self.a = np.ones((self.n_target,1))
@@ -53,9 +57,8 @@ class LocalisedSimilaritiesClassifier(object):
         ##Paramètres des localised similarities
         self.xi = None
         self.xj = None
-        self.tau = 10**(-2)
+        self.tau = 10**(-5)
         self.final_loss = None
-
 
     def apply(self, x_train, y_train):
         self.clf.fit(x_train, y_train)
@@ -68,7 +71,7 @@ class LocalisedSimilaritiesClassifier(object):
         ###Step 0
         self._params_init(x, y, H)
         print('L0')
-        print(1 / self.len_data * np.sum(self.W))
+        print(np.sum(self.W) / self.len_data)
 
         ###First step
         self.clf = self.f_homogeneous
@@ -78,7 +81,6 @@ class LocalisedSimilaritiesClassifier(object):
         ###Second Step
         U = self.compute_U()
         eigen_values, eigen_vectors =np.linalg.eig(U)
-
         v1 = eigen_vectors[:,np.argmax(eigen_values)]
         for i in range(self.len_data):
             intermediate_vector = np.zeros(self.len_data)
@@ -121,20 +123,29 @@ class LocalisedSimilaritiesClassifier(object):
         x_train_modif = self.x_train
         B_modif = self.B
 
-        print('B')
-        print(self.B)
+        #print('B')
+        #print(self.B)
 
-        print('On arrive aux Two-points')
-        while x_train_modif[B_modif == -B_modif[indice_i]].shape[0] > 1:
+        #print('On arrive aux Two-points')
+        if self.B[indice_i] > 0:
+            signe_xi = 1
+        else:
+            signe_xi = -1
+
+        while x_train_modif[B_modif == -signe_xi].shape[0] > 1:
             ###Fourth Step
 
-            x_likely_similar = x_train_modif[B_modif == -B_modif[indice_i]] - self.xi
+            x_likely_similar = x_train_modif[B_modif == -signe_xi] - self.xi
             x_likely_similar_trans = []
             if len(x_likely_similar) > 0:
                 for element in x_likely_similar:
                     x_likely_similar_trans.append(np.linalg.norm(element)**2)
                 indice_j = np.argmin(x_likely_similar_trans)
-                self.xj = x_train_modif[B_modif == -B_modif[indice_i]][indice_j]
+                while np.all(x_train_modif[B_modif == -signe_xi][indice_j] == self.xi) and  len(x_likely_similar_trans) > 1:
+                    del x_likely_similar_trans[indice_j]
+                    indice_j = np.argmin(x_likely_similar_trans)
+                self.xj = x_train_modif[B_modif == -signe_xi][indice_j]
+
             else:
                 break
 
@@ -143,27 +154,33 @@ class LocalisedSimilaritiesClassifier(object):
             self.clf = self.f_two_points
             third_loss = self.optimal_loss()
 
+            #print('on commence')
             ###Sith step
-            liste_index=[]
-            f_ij = self.f_two_points(x_train_modif)
-            for index in range(x_train_modif.shape[0]):
-                if f_ij[index] <= f_ij[indice_j]/2:
-                    liste_index.append(index)
 
-            if third_loss < self.final_loss:
-                self.final_loss = third_loss
-                self.clf = self.f_two_points
-                xj_save = self.xj
-            else:
+            if np.all(self.xj == self.xi):
                 self.clf = save_clf
                 self.xj = xj_save
+            else:
+                liste_index=[]
+                f_ij = self.f_two_points(x_train_modif)
+                f_ij_xj = self.f_two_points([self.xj])
+                for index in range(x_train_modif.shape[0]):
+                    if f_ij[index] <= f_ij_xj/2:
+                        liste_index.append(index)
 
-            x_train_modif = np.delete(x_train_modif, liste_index)
+                if third_loss < self.final_loss:
+                    self.final_loss = third_loss
+                    self.clf = self.f_two_points
+                    xj_save = self.xj
+                else:
+                    self.clf = save_clf
+                    self.xj = xj_save
+
+            x_train_modif = np.delete(x_train_modif, liste_index,axis=0)
             B_modif = np.delete(B_modif, liste_index)
             #mise à jour de l'indice_i (si décalage)
-            indice_i = np.where(x_train_modif == self.xi)
 
-        #Pour set le nom
+
         self.H = self.compute_H(self.x_train,self.H)
         self.clf(np.array([0]))
         self.a = self.optimal_vector()
@@ -181,18 +198,17 @@ class LocalisedSimilaritiesClassifier(object):
     def optimal_loss(self):
 
         #According to the older H
-
+        save_compute_localised = self.compute_localised(self.x_train)
         intermediate_vector = np.zeros((self.n_target, self.x_train.shape[0]))
-        intermediate_vector[self.compute_localised(self.x_train) * self.Y < 0] = np.ones(intermediate_vector[self.compute_localised(self.x_train) * self.Y < 0].shape[0])
+        intermediate_vector[save_compute_localised * self.Y < 0] = np.ones(intermediate_vector[save_compute_localised * self.Y < 0].shape[0])
         sf_T = 1/self.len_data * np.sum(intermediate_vector * self.W,axis=1)
 
         intermediate_vector = np.zeros((self.n_target, self.x_train.shape[0]))
-        intermediate_vector[self.compute_localised(self.x_train) * self.Y > 0] = np.ones(intermediate_vector[self.compute_localised(self.x_train) * self.Y > 0].shape[0])
+        intermediate_vector[save_compute_localised * self.Y > 0] = np.ones(intermediate_vector[save_compute_localised * self.Y > 0].shape[0])
         sf_F = 1/self.len_data * np.sum(intermediate_vector * self.W,axis=1)
 
         loss = 2 * np.sum(np.sqrt(sf_T*sf_F))
-        print(self.predict(self.x_train))
-        print(loss)
+
         return loss
 
     def optimal_loss_1(self):
@@ -203,10 +219,10 @@ class LocalisedSimilaritiesClassifier(object):
         new_W = 1/2*np.exp(self.Y * new_H)
         loss = 1/self.len_data * np.sum(new_W)
 
-        print('loss')
-        print(loss)
-        print(self.optimal_loss_1())
-        print('new one')
+        #print('loss')
+        #print(loss)
+        #print(self.optimal_loss_1())
+        #print('new one')
         return loss
 
     def optimal_loss_binarised(self):
@@ -223,20 +239,23 @@ class LocalisedSimilaritiesClassifier(object):
 
     def optimal_vector(self):
 
+        save_compute_localised = self.compute_localised(self.x_train)
+
         intermediate_vector = np.zeros((self.n_target, self.x_train.shape[0]))
-        intermediate_vector[self.compute_localised(self.x_train) * self.Y < 0] = np.ones(intermediate_vector[self.compute_localised(self.x_train) * self.Y < 0].shape[0])
+        intermediate_vector[save_compute_localised * self.Y < 0] = np.ones(intermediate_vector[save_compute_localised * self.Y < 0].shape[0])
         sf_T = 1/self.len_data * np.sum(intermediate_vector * self.W,axis=1)
 
         intermediate_vector = np.zeros((self.n_target, self.x_train.shape[0]))
-        intermediate_vector[self.compute_localised(self.x_train) * self.Y > 0] = np.ones(intermediate_vector[self.compute_localised(self.x_train) * self.Y > 0].shape[0])
+        intermediate_vector[save_compute_localised * self.Y > 0] = np.ones(intermediate_vector[save_compute_localised * self.Y > 0].shape[0])
         sf_F = 1/self.len_data * np.sum(intermediate_vector * self.W,axis=1)
 
         #Pour eviter les erreurs de loss on transforme les valeurs nulle en 1 pour annuler ln
-        sf_T[sf_T==0] = 0.1
-        sf_F[sf_F==0] = 0.1
+        sf_T[sf_T==0] = 0.001
+        sf_F[sf_F==0] = 0.001
 
         a = 1 / 2 * (np.log(sf_T) - np.log(sf_F))  # Permet d'attribuer les poids
-        print(a)
+        #print('vecteur a')
+        #print(a)
         return a
 
     def compute_U(self):
@@ -244,6 +263,7 @@ class LocalisedSimilaritiesClassifier(object):
         denom = np.sqrt(np.sum(self.W,axis=1))
         for element in range(self.len_data):
             u[:, element] = self.W[:,element]*self.Y[:,element]/denom
+
         return np.dot(u.T,u)
 
     def f_homogeneous(self,x):
@@ -267,6 +287,7 @@ class LocalisedSimilaritiesClassifier(object):
             scalaire = np.dot(d,(element-m))
             x_norme = np.linalg.norm(element-m)**4
             f.append(scalaire/(4*np.linalg.norm(d)**4+np.array(x_norme)))
+
         return np.array(f)
        # return np.ones(x.shape[0])
 
@@ -282,7 +303,8 @@ class LocalisedSimilaritiesClassifier(object):
 
     def predict(self,x):
         #According to new H
-
+        #print('H prediction')
+        #print(self.H)
         H = np.copy(self.H)
         H = self.compute_H(x,H)
         predictions = []
@@ -302,6 +324,8 @@ class LocalisedSimilaritiesClassifier(object):
         compute = self.compute_localised(x)
         for xi in range(x.shape[0]):
             H[:, xi] += compute[xi] * a_t
+        #print('Next H')
+        #print(H)
         return H
 
 
